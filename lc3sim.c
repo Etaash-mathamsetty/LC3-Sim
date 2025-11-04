@@ -1455,11 +1455,6 @@ int main(int argc, const char **argv)
             }
         }
 
-        if (memory[OS_DDR])
-        {
-            memory[OS_DDR] = 0;
-        }
-
         //printf("memory[0x4000]=%d\n", (int16_t)memory[0x4000]);
         //printf("memory[0x4001]=%d\n", (int16_t)memory[0x4001]);
 
