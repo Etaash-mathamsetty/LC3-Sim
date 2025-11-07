@@ -26,9 +26,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) sizeof(x)/sizeof(x[0])
+#endif
 
 #define FLAG_N (1 << 2)
 #define FLAG_Z (1 << 1)
@@ -75,19 +81,22 @@
 #define RTI() 0x8000
 
 /* compose 2 characters into one word for PUTSP */
-#define COMPOSE_CH(ch1, ch2) (ch2 & 0xff) | ((ch1 & 0xff) << 8)
+#define COMPOSE_CH(ch1, ch2) (ch1 & 0xff) | ((ch2 & 0xff) << 8)
 
 /* TRAP/INT addresses for TRAP/INT table */
 #define BAD_TRAP 0x200
 #define PUTS_TRAP 0x23b
 #define HALT_TRAP 0x21a
 #define OUT_TRAP 0x24a
-#define BAD_INT 0x0 /* TODO */
+#define BAD_INT 0x314
 #define OS_START 0x230
 #define USER_PC 0x23a
 #define GETC_TRAP 0x254
 #define IN_TRAP 0x25a
-#define PRIV_MODE_EXCEPTION 0x280
+#define PUTSP_TRAP 0x27a
+#define PRIV_MODE_EXCEPTION 0x2a9
+#define IGL_INS_EXCEPTION 0x2ca
+#define ACV_EXCEPTION 0x2f0
 
 const uint16_t OSProgram[0x500] = {
     /* TRAP VECTORS */
@@ -127,7 +136,7 @@ const uint16_t OSProgram[0x500] = {
     OUT_TRAP, /* 21 */
     PUTS_TRAP, /* 22 */
     IN_TRAP, /* 23 */
-    BAD_TRAP, /* 24 */
+    PUTSP_TRAP, /* 24 */
     HALT_TRAP, /* 25 */
     BAD_TRAP, /* 26 */
     BAD_TRAP, /* 27 */
@@ -350,8 +359,8 @@ const uint16_t OSProgram[0x500] = {
     /* TODO: Fix above and below comments */
     /* INTERRUPT VECTORS */
     PRIV_MODE_EXCEPTION, /* 100 */
-    BAD_INT, /* 101 */
-    BAD_INT, /* 102 */
+    IGL_INS_EXCEPTION, /* 101 */
+    ACV_EXCEPTION, /* 102 */
     BAD_INT, /* 103 */
     BAD_INT, /* 104 */
     BAD_INT, /* 105 */
@@ -720,134 +729,196 @@ const uint16_t OSProgram[0x500] = {
     'n', /* 267 */
     't', /* 268 */
     'e', /* 269 */
-    'r', /* 270 */
-    ' ', /* 271 */
+    'r', /* 26a */
+    ' ', /* 26b */
+    'a', /* 26c */
+    ' ', /* 26d */
+    'C', /* 26e */
+    'h', /* 26f */
+    'a', /* 270 */
+    'r', /* 271 */
     'a', /* 272 */
-    ' ', /* 273 */
-    'C', /* 274 */
-    'h', /* 275 */
-    'a', /* 276 */
-    'r', /* 277 */
-    'a', /* 278 */
-    'c', /* 279 */
-    't', /* 27a */
-    'e', /* 27b */
-    'r', /* 27c */
-    ':', /* 27d */
-    ' ', /* 27e */
-     0, /* 27f */
+    'c', /* 273 */
+    't', /* 274 */
+    'e', /* 275 */
+    'r', /* 276 */
+    ':', /* 277 */
+    ' ', /* 278 */
+     0, /* 279 */
     /* PUTSP TRAP */
-
-    RTI(), /* 280 */
+    ADDIMM(6, 6, -1), /* push 27a */
+    STR(0, 6, 0), /* save r0 27b */
+    ADDIMM(6, 6, -1), /* push 27c */
+    STR(1, 6, 0), /* save r1 27d */
+    ADDIMM(6, 6, -1), /* push 27e */
+    STR(2, 6, 0), /* save r2 27f */
+    ADDIMM(6, 6, -1), /* push 280 */
+    STR(3, 6, 0), /* save r3 281 */
+    ADDIMM(6, 6, -1), /* push 282 */
+    STR(4, 6, 0), /* save r4 283 */
+    ADDIMM(6, 6, -1), /* push 284 */
+    STR(5, 6, 0), /* save r5 285 */
+    ADDIMM(1, 0, 0), /* r1 = r0 286 */
+    LD(4, 0x20), /* r4 = -0x100 287 */
+    LD(2, 0x1d), /* r2 = 0xff 288 */
+    LDR(0, 1, 0), /* r0 = *r1 289 */
+    BR(0b010, 14), /* break if r0 == 0 28a */
+    ANDR(0, 0, 2), /* r0 = r0 & r2 28b */
+    /* FIXME: all offsets are off by 1 from here on */
+    TRAP(0x21), /* OUT 28d */
+    LD(2, 0x19), /* r2 = 0xff00 28e */
+    LDR(5, 1, 0), /* r5 = *r1 28f */
+    ANDR(5, 5, 2), /* r5 = r5 & r2 290 */
+    BR(0b010, 6), /* break if r5 is 0 291 */
+    ANDIMM(0, 0, 0), /* r0 = 0 292 */
+    ADDR(5, 5, 4), /* r5 = r4 + r5 293 */
+    ADDIMM(0, 0, 1), /* r0++ 294 */
+    ADDR(3, 5, 4), /* r3 = r5 + r4 295 */
+    BR(0b011, -4), /* continue if r5 - 0x100 > 0 296 */
+    TRAP(0x21), /* OUT 297 */
+    ADDIMM(1, 1, 1), /* r1++ 298 */
+    BR(0b111, -0x11), /* loop back to r2 = 0xff 299 */
+    LDR(5, 6, 0), /* restore r5 29a */
+    ADDIMM(6, 6, 1), /* pop 29b */
+    LDR(4, 6, 0), /* restore r4 29c */
+    ADDIMM(6, 6, 1), /* pop 29d */
+    LDR(3, 6, 0), /* restore r3 29e */
+    ADDIMM(6, 6, 1), /* pop 29f */
+    LDR(2, 6, 0), /* restore r2 2a0 */
+    ADDIMM(6, 6, 1), /* pop 2a1 */
+    LDR(1, 6, 0), /* restore r1 2a2 */
+    ADDIMM(6, 6, 1), /* pop 2a3 */
+    LDR(0, 6, 0), /* restore r0 2a4 */
+    ADDIMM(6, 6, 1), /* pop 2a5 */
+    RTI(), /* 2a6 */
+    0xFF, /* mask of low bits 2a7 */
+    0xFF00, /* mask of high bits 2a8 */
+    0xff00, /* -0x100 used for subtraction 2a9 */
     /* INTERRUPT METHODS */
     /* Priv mode Exception */
-    LEA(0, 2),
-    TRAP(0x22),
-    TRAP(0x25),
-    '\n',
-    '\n',
-    'P',
-    'r',
-    'i',
-    'v',
-    'i',
-    'l',
-    'e',
-    'g',
-    'e',
-    ' ',
-    'm',
-    'o',
-    'd',
-    'e',
-    ' ',
-    'e',
-    'x',
-    'c',
-    'e',
-    'p',
-    't',
-    'i',
-    'o',
-    'n',
-    '!',
-    '\n',
-    '\n',
-    0,
+    LEA(0, 2), /* 2aa */
+    TRAP(0x22), /* 2ab */
+    TRAP(0x25), /* 2ac */
+    '\n', /* 2ad */
+    '\n', /* 2ae */
+    'P', /* 2af */
+    'r', /* 2b0 */
+    'i', /* 2b1 */
+    'v', /* 2b2 */
+    'i', /* 2b3 */
+    'l', /* 2b4 */
+    'e', /* 2b5 */
+    'g', /* 2b6 */
+    'e', /* 2b7 */
+    ' ', /* 2b8 */
+    'm', /* 2b9 */
+    'o', /* 2ba */
+    'd', /* 2bb */
+    'e', /* 2bc */
+    ' ', /* 2bd */
+    'e', /* 2be */
+    'x', /* 2bf */
+    'c', /* 2c0 */
+    'e', /* 2c1 */
+    'p', /* 2c2 */
+    't', /* 2c3 */
+    'i', /* 2c4 */
+    'o', /* 2c5 */
+    'n', /* 2c6 */
+    '!', /* 2c7 */
+    '\n', /* 2c8 */
+    '\n', /* 2c9 */
+    0, /* 2ca */
     /* illegal instruction exception */
-    LEA(0, 2),
-    TRAP(0x22),
-    TRAP(0x25),
-    '\n',
-    '\n',
-    'I',
-    'l',
-    'l',
-    'e',
-    'g',
-    'a',
-    'l',
-    ' ',
-    'i',
-    'n',
-    's',
-    't',
-    'r',
-    'u',
-    'c',
-    't',
-    'i',
-    'o',
-    'n',
-    ' ',
-    'e',
-    'x',
-    'c',
-    'e',
-    'p',
-    't',
-    'i',
-    'o',
-    'n',
-    '!',
-    '\n',
-    '\n',
-    0,
+    LEA(0, 2), /* 2cb */
+    TRAP(0x22), /* 2cc */
+    TRAP(0x25), /* 2cd */
+    '\n', /* 2ce */
+    '\n', /* 2cf */
+    'I', /* 2d0 */
+    'l', /* 2d1 */
+    'l', /* 2d2 */
+    'e', /* 2d3 */
+    'g', /* 2d4 */
+    'a', /* 2d5 */
+    'l', /* 2d6 */
+    ' ', /* 2d7 */
+    'i', /* 2d8 */
+    'n', /* 2d9 */
+    's', /* 2da */
+    't', /* 2db */
+    'r', /* 2dc */
+    'u', /* 2dd */
+    'c', /* 2de */
+    't', /* 2df */
+    'i', /* 2e0 */
+    'o', /* 2e1 */
+    'n', /* 2e2 */
+    ' ', /* 2e3 */
+    'e', /* 2e4 */
+    'x', /* 2e5 */
+    'c', /* 2e6 */
+    'e', /* 2e7 */
+    'p', /* 2e8 */
+    't', /* 2e9 */
+    'i', /* 2ea */
+    'o', /* 2eb */
+    'n', /* 2ec */
+    '!', /* 2ed */
+    '\n', /* 2ee */
+    '\n', /* 2ef */
+    0, /* 2f0 */
     /* Access Violation Exception */
-    LEA(0, 2),
-    TRAP(0x22),
-    TRAP(0x25),
-    '\n',
-    '\n',
-    'A',
-    'c',
-    'e',
-    's',
-    's',
-    ' ',
-    'V',
-    'i',
-    'o',
-    'l',
-    'a',
-    't',
-    'i',
-    'o',
-    'n',
-    ' ',
-    'E',
-    'x',
-    'c',
-    'e',
-    'p',
-    't',
-    'i',
-    'o',
-    'n',
-    '!',
-    '\n',
-    '\n',
-    0
+    LEA(0, 2), /* 2f1 */
+    TRAP(0x22), /* 2f3 */
+    TRAP(0x25), /* 2f4 */
+    '\n', /* 2f5 */
+    '\n', /* 2f6 */
+    'A', /* 2f7 */
+    'c', /* 2f8 */
+    'c', /* 2f9 */
+    /* FIXME: now off by 0 */
+    'e', /* 2f9 */
+    's', /* 2fa */
+    's', /* 2fb */
+    ' ', /* 2fc */
+    'V', /* 2fd */
+    'i', /* 2fe */
+    'o', /* 2ff */
+    'l', /* 300 */
+    'a', /* 301 */
+    't', /* 302 */
+    'i', /* 303 */
+    'o', /* 304 */
+    'n', /* 305 */
+    ' ', /* 306 */
+    'E', /* 307 */
+    'x', /* 308 */
+    'c', /* 309 */
+    'e', /* 30a */
+    'p', /* 30b */
+    't', /* 30c */
+    'i', /* 30d */
+    'o', /* 30e */
+    'n', /* 30f */
+    '!', /* 310 */
+    '\n', /* 311 */
+    '\n', /* 312 */
+    0, /* 313 */
+    /* bad interrupt */
+    LEA(0, 2), /* 314 */
+    TRAP(0x24), /* 315 */
+    TRAP(0x25), /* 316 */
+    COMPOSE_CH('\n', '\n'), /* 317 */
+    COMPOSE_CH('B', 'a'), /* 318 */
+    COMPOSE_CH('d', ' '), /* 319 */
+    COMPOSE_CH('I', 'n'), /* 31a */
+    COMPOSE_CH('t', 'e'), /* 31b */
+    COMPOSE_CH('r', 'r'), /* 31c */
+    COMPOSE_CH('u', 'p'), /* 31d */
+    COMPOSE_CH('t', '!'), /* 31e */
+    COMPOSE_CH('\n', '\n'), /* 31f */
+    0, /* 320 */
 };
 
 #undef BAD_TRAP
@@ -895,12 +966,12 @@ static int16_t sext6(uint16_t input)
         return input;
 }
 
-static void dump_registers(uint16_t *registers, uint16_t psr, uint16_t pc)
+static void dump_registers(uint16_t *registers, uint16_t psr, uint16_t pc, uint16_t ir)
 {
     printf("R0=%#x R1=%#x R2=%#x R3=%#x R4=%#x R5=%#x R6=%#x R7=%#x\n",
            registers[0], registers[1], registers[2], registers[3],
            registers[4], registers[5], registers[6], registers[7]);
-    printf("psr=%#x pc=%#x\n\n", psr, pc);
+    printf("PSR=%#x PC=%#x IR=%#x\n\n", psr, pc, ir);
 }
 
 static void dump_instr(uint16_t instr)
@@ -917,9 +988,6 @@ static void dump_instr(uint16_t instr)
     const char* pNames[2] = {
         "", "p"
     };
-
-
-    printf("instr: %#x\n", instr);
 
     uint8_t opcode = instr >> 12;
     switch (opcode)
@@ -1131,6 +1199,363 @@ static void update_cond_code(int16_t value, uint16_t *memory)
     if (value > 0) memory[OS_PSR] |= FLAG_P;
 }
 
+struct debugger_ctx {
+    int cont;
+    char last[0x100];
+    uint16_t breakpoints[67];
+    int16_t breakpoint_size;
+};
+
+static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, uint16_t *registers)
+{
+    char string[0x100] = {0};
+    char *tok = NULL;
+    char *end = string;
+
+    printf(">>> ");
+
+    do
+    {
+        char c = getchar();
+        if (c == '\n' || c == '\0') break;
+        if (end - string >= ARRAY_SIZE(string)) break;
+        *end++ = c;
+    } while (1);
+
+    /* do backwards trim */
+    if (end > string)
+        while (isspace(*(end-1))) *--end = '\0';
+
+    if (strlen(ctx->last) > 0 && strlen(string) == 0)
+    {
+        memcpy(string, ctx->last, ARRAY_SIZE(string));
+    }
+
+    tok = strtok(string, " ");
+
+    if (!tok)
+    {
+        printf("Invalid parameter!\n");
+        return 0;
+    }
+
+    if (!strcmp(tok, "s") || !strcmp(tok, "step"))
+    {
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        return 1;
+    }
+
+    if (!strcmp(tok, "c") || !strcmp(tok, "continue"))
+    {
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        ctx->cont = 1;
+        return 1;
+    }
+
+    if (!strcmp(tok, "q") || !strcmp(tok, "quit") || !strcmp(tok, "exit"))
+    {
+        exit(0);
+    }
+
+    if (!strcmp(tok, "clear"))
+    {
+        printf("\e[1;1H\e[2J");
+
+        return 0;
+    }
+
+    if (!strcmp(tok, "2007/12/11") || !strcmp(tok, "0x7D7"))
+    {
+        printf("https://github.com/Etaash-mathamsetty/\n");
+
+        return 0;
+    }
+
+    if (!strcmp(tok, "ECE120"))
+    {
+        printf("Stay tuned for Behya announcement!\n");
+
+        return 0;
+    }
+
+
+    if (!strcmp(tok, "h") || !strcmp(tok, "help"))
+    {
+        tok = strtok(NULL, " ");
+
+        if (tok && !strcmp(tok, "break"))
+        {
+            printf("Seems like you don't know how to use the break command :(\n");
+            printf("Here's some information on how to use it :D\n\n");
+
+            printf("add <address>: Adds a breakpoint for some address\n");
+            printf("list: Lists all breakpoints\n");
+            printf("remove <address>: Removes a breakpoint for some address\n");
+            printf("pop: Removes the previously added breakpoint\n");
+        } else if (tok && !strcmp(tok, "reg")) {
+            printf("Seems like you don't know how to use the reg command :(\n");
+            printf("Here's some information on how to use it :D\n\n");
+
+            printf("set R# <value>: Sets a register to a value\n");
+            printf("list: Lists all registers\n");
+        } else {
+            printf("Seems like you don't know how to use the debugger :(\n");
+            printf("Here's some information on how to use it :D\n\n");
+
+            printf("help: Prints this menu\n");
+            printf("step: Steps forward one instruction\n");
+            printf("continue: Continues execution until breakpoint\n");
+            printf("break ...: Family of breakpoint management commmands\n");
+            printf("reg ...: Family of register management commands\n");
+            printf("quit: Quits the emulator\n");
+            printf("read <address>: Read a memory address (or range of addresses)\n");
+            printf("write <address>: Write memory to an address\n");
+            printf("decode <address>: Translate data at an address into an instruction\n");
+            printf("goto <address>: Set PC to some address\n \tNOTE: PSR and stack pointers will not be switched unless RTI is executed!\n");
+        }
+
+        return 0;
+    }
+
+    if (!strcmp(tok, "read"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned off;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x\n", &off);
+
+        off &= 0xffff;
+        printf("memory[%#x]=%#x\n", off, memory[off]);
+
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        return 0;
+    }
+
+    if (!strcmp(tok, "goto"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned addr;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x", &addr);
+
+        *pc = memory + addr;
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        return 1;
+    }
+
+    if (!strcmp(tok, "decode"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned off;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x", &off);
+
+        off &= 0xffff;
+        dump_instr(memory[off]);
+
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        return 0;
+    }
+
+    if (!strcmp(tok, "write"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned addr, val;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x", &addr);
+
+        tok = strtok(NULL, " ");
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x", &val);
+
+        addr &= 0xffff;
+        val &= 0xffff;
+
+        memory[addr] = val;
+        printf("memory[%#x]=%#x\n", addr, val);
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+
+        return 0;
+    }
+
+    if (!strcmp(tok, "reg"))
+    {
+        tok = strtok(NULL, " ");
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        if (!strcmp(tok, "list") || !strcmp(tok, "show"))
+        {
+            dump_registers(registers, memory[OS_PSR], *pc - memory - 1, *(*pc-1));
+            memcpy(ctx->last, string, ARRAY_SIZE(string));
+            return 0;
+        }
+        else if (!strcmp(tok, "set"))
+        {
+            tok = strtok(NULL, " ");
+            unsigned num;
+            unsigned value;
+
+            if (!tok)
+            {
+                printf("Invalid parameter!\n");
+                return 0;
+            }
+
+            sscanf(tok, "R%u", &num);
+
+            tok = strtok(NULL, " ");
+
+            if (!tok)
+            {
+                printf("Invalid parameter!\n");
+                return 0;
+            }
+
+            sscanf(tok, "%x", &value);
+
+            registers[num] = value;
+
+            memcpy(ctx->last, string, ARRAY_SIZE(string));
+            return 0;
+        }
+
+        printf("Invalid parameter!\n");
+        return 0;
+    }
+
+    if (!strcmp(tok, "break"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned addr;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        if (!strcmp(tok, "add") || !strcmp(tok, "push"))
+        {
+            tok = strtok(NULL, " ");
+
+            if (!tok)
+            {
+                printf("Invalid parameter!\n");
+                return 0;
+            }
+
+            sscanf(tok, "%x\n", &addr);
+
+            addr &= 0xffff;
+
+            for (int i = 0; i < ctx->breakpoint_size; i++)
+            {
+                if (addr == ctx->breakpoints[i])
+                {
+                    printf("breakpoint already set at %#x\n", addr);
+                    memcpy(ctx->last, string, ARRAY_SIZE(string));
+                    return 0;
+                }
+            }
+
+            ctx->breakpoints[ctx->breakpoint_size++] = addr;
+
+            printf("breakpoint set at %#x\n", addr);
+        }
+        else if (!strcmp(tok, "rm") || !strcmp(tok, "remove"))
+        {
+            tok = strtok(NULL, " ");
+            unsigned addr;
+
+            sscanf(tok, "%x\n", &addr);
+
+            addr &= 0xffff;
+
+            for (int i = 0; i < ctx->breakpoint_size; i++)
+            {
+                if (addr == ctx->breakpoints[i])
+                {
+                    memmove(ctx->breakpoints + i, ctx->breakpoints + i + 1, (ctx->breakpoint_size - i - 1) * sizeof(uint16_t));
+                    ctx->breakpoint_size--;
+                    printf("breakpoint removed at %#x\n", addr);
+                    memcpy(ctx->last, string, ARRAY_SIZE(string));
+                    return 0;
+                }
+            }
+
+            printf("breakpoint not found!\n");
+        }
+        else if (!strcmp(tok, "pop"))
+        {
+            unsigned addr;
+
+            if (ctx->breakpoint_size > 0)
+            {
+                addr = ctx->breakpoints[--ctx->breakpoint_size];
+                printf("breakpoint removed at %#x\n", addr);
+            } else {
+                printf("no breakpoints available to remove!\n");
+            }
+        }
+        else if (!strcmp(tok, "list") || !strcmp(tok, "show"))
+        {
+            for (int i = 0; i < ctx->breakpoint_size; i++)
+            {
+                printf("breakpoint[%d] = %#x\n", i, ctx->breakpoints[i]);
+            }
+        }
+        else
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+
+
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+
+        return 0;
+    }
+
+    printf("invalid command: %s\n", string);
+    return 0;
+}
+
 //#define LC3_EXTENDED
 
 #ifdef LC3_EXTENDED
@@ -1201,34 +1626,78 @@ static void parse_extended(uint16_t instr1, uint16_t instr2, uint16_t *memory, u
 
 #endif
 
-int main(int argc, const char **argv)
+int main(int argc, char **argv)
 {
     uint16_t *pc;
     /* LC-3 can only address [0, 0xffff] but we have extra few values for ssp, usp, pc, registers */
     uint16_t *memory = calloc(0x10000 + 2, sizeof(uint16_t));
     uint16_t registers[8] = {0};
-
+    struct debugger_ctx ctx = {0};
     int ddrsize = 0x100;
     char *buffer = calloc(ddrsize, sizeof(char));
     int ddrct = 0;
+    int debug = 0;
+    uint16_t dump_addr[0x100] = {0};
+    int dump_size = 0;
 
     memcpy(memory, OSProgram, sizeof(OSProgram));
 
-    /* parse additional programs/data */
-    for (int i = 1; i < argc-1; i++)
     {
-        if (!parse_program_from_bin(argv[i], memory))
+        /* parse additional programs/data */
+        for (int i = 1; i < argc; i++)
         {
-            fprintf(stderr, "Failed to load %s\n", argv[i]);
-            continue;
-        }
-    }
+            char *arg = argv[i];
 
-    /* last program is what we set PC to */
-    if (!(argc >= 2 && (pc = parse_program_from_bin(argv[argc-1], memory))))
-    {
-        fprintf(stderr, "No program specified!\n");
-        return 1;
+            if (strstr(arg, "--") == arg)
+            {
+                arg += 2;
+                if (strstr(arg, "dump=") == arg)
+                {
+                    char *tok;
+                    unsigned addr;
+                    arg += 5;
+                    tok = strtok(arg, ",");
+
+                    do
+                    {
+                        sscanf(tok, "%x", &addr);
+
+                        dump_addr[dump_size] = addr & 0xffff;
+                        dump_size++;
+                        dump_size %= ARRAY_SIZE(dump_addr);
+
+                    } while ((tok = strtok(NULL, ",")));
+                }
+                else if (!strcmp(arg, "help"))
+                {
+                    printf("Welcome to the LC-3 simulator!\n");
+                    printf("Here are the supported command line flags:\n\n");
+                    printf("--help: Prints this menu\n");
+                    printf("--debug: Enables the debugger\n");
+                    printf("--dump=0xeceb,0xbeef,etc: Dump specified memory addresses on simulator exit\n\n");
+                    printf("NOTE: The last specified object file is assumed to be the main program!\n");
+
+
+                    return 0;
+                }
+                else if (!strcmp(arg, "debug"))
+                {
+                    debug = 1;
+                }
+            }
+            else if (!parse_program_from_bin(arg, memory) && i < argc-1)
+            {
+                fprintf(stderr, "Failed to load %s\n", argv[i]);
+                continue;
+            }
+        }
+
+        /* last program is what we set PC to */
+        if (!(argc >= 2 && (pc = parse_program_from_bin(argv[argc-1], memory))))
+        {
+            fprintf(stderr, "No program specified!\n");
+            return 1;
+        }
     }
 
     /* overwrite the OS memory to use the start address of the given program */
@@ -1246,8 +1715,20 @@ int main(int argc, const char **argv)
     /* terminate the emulator if clock gets disabled */
     while (memory[OS_MCR] & (1u << 15))
     {
-        dump_instr(*pc);
-        dump_registers(registers, memory[OS_PSR], pc - memory);
+        if (debug)
+        {
+            for (int i = 0; i < ctx.breakpoint_size; i++)
+            {
+                if (pc - memory == ctx.breakpoints[i])
+                    ctx.cont = 0;
+            }
+        }
+
+        if (debug && !ctx.cont)
+        {
+            dump_instr(*pc);
+            dump_registers(registers, memory[OS_PSR], pc - memory, *pc);
+        }
 
         switch ((*pc & 0xf000) >> 12)
         {
@@ -1361,7 +1842,7 @@ int main(int argc, const char **argv)
                 else
                 {
                     memory[address] = registers[(*pc & (0b111 << 9)) >> 9];
-                    if (address == OS_DDR)
+                    if (address == OS_DDR && memory[OS_DDR])
                     {
                         buffer[ddrct++] = memory[OS_DDR];
                         if (ddrct >= ddrsize)
@@ -1458,16 +1939,29 @@ int main(int argc, const char **argv)
         //printf("memory[0x4000]=%d\n", (int16_t)memory[0x4000]);
         //printf("memory[0x4001]=%d\n", (int16_t)memory[0x4001]);
 
-        printf("buffer: %s \n\n --- buffer end --- \n\n", buffer);
-
         pc++;
         memory[OS_MCC]++;
-        //getchar();
+
+        if (debug && !ctx.cont)
+            while (!debug_cmd(&ctx, memory, &pc, registers));
     }
 
-    printf("The clock was disabled!\n\n");
 
-finish:
+    printf("buffer: %s \n\n --- buffer end --- \n\n", buffer);
+    printf("\n\n");
+
+    if (debug)
+    {
+        dump_registers(registers, memory[OS_PSR], pc - memory - 1, *(pc - 1));
+    }
+
+    for (int i = 0; i < dump_size; i++)
+    {
+        printf("memory[%#x]=%#x\n", dump_addr[i], memory[dump_addr[i]]);
+    }
+
+    printf("\n\nThe clock was disabled!\n\n");
+
     free(buffer);
     free(memory);
     return 0;
