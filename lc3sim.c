@@ -1539,13 +1539,15 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
                 printf("breakpoint[%d] = %#x\n", i, ctx->breakpoints[i]);
             }
         }
+        else if (!strcmp(tok, "clear"))
+        {
+            ctx->breakpoint_size = 0;
+        }
         else
         {
             printf("Invalid parameter!\n");
             return 0;
         }
-
-
 
         memcpy(ctx->last, string, ARRAY_SIZE(string));
 
