@@ -1292,6 +1292,7 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
             printf("list: Lists all breakpoints\n");
             printf("remove <address>: Removes a breakpoint for some address\n");
             printf("pop: Removes the previously added breakpoint\n");
+            printf("clear: Removes all breakpoints\n");
         } else if (tok && !strcmp(tok, "reg")) {
             printf("Seems like you don't know how to use the reg command :(\n");
             printf("Here's some information on how to use it :D\n\n");
