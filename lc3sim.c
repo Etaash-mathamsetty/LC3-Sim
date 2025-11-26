@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -46,7 +47,6 @@
 #define OS_DDR 0xFE06
 #define OS_PSR 0xFFFC
 #define OS_MCR 0xFFFE
-#define OS_MCC 0xFFFF
 
 #define MASK_HIGH 0x7FFF
 
@@ -994,7 +994,22 @@ static void dump_instr(uint16_t instr)
     {
         case 0b1111:
         {
-            printf("instr: TRAP %#x\n", instr & 0xff);
+            uint8_t vec8 = instr & 0xff;
+            switch(vec8)
+            {
+                case 0x25: /* HALT */
+                    printf("instr: HALT\n");
+                    break;
+                case 0x22: /* PUTS */
+                     printf("instr: PUTS\n");
+                     break;
+                case 0x20: /* GETC */
+                    printf("instr: GETC\n");
+                    break;
+                default:
+                    printf("instr: TRAP %#x\n", vec8);
+                    break;
+            }
             return;
         }
         case 0b0001:
@@ -1169,7 +1184,7 @@ static uint16_t *parse_program_from_bin(const char *path, uint16_t *memory)
 static void interrupt(uint16_t *memory, uint16_t *registers, uint16_t **pc, uint8_t code)
 {
     /* update PC */
-    *pc = memory + memory[0x100 + code] - 1;
+    *pc = memory + memory[0x100 + code];
     /* save USP if in user mode */
     if (memory[OS_PSR] & (1u << 15))
     {
@@ -1201,6 +1216,8 @@ static void update_cond_code(int16_t value, uint16_t *memory)
 
 struct debugger_ctx {
     int cont;
+    int next;
+    int next_ct;
     char last[0x100];
     uint16_t breakpoints[67];
     int16_t breakpoint_size;
@@ -1252,6 +1269,14 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
         return 1;
     }
 
+    if (!strcmp(tok, "n") || !strcmp(tok, "next"))
+    {
+        memcpy(ctx->last, string, ARRAY_SIZE(string));
+        ctx->next = 1;
+        ctx->next_ct = 0;
+        return 1;
+    }
+
     if (!strcmp(tok, "q") || !strcmp(tok, "quit") || !strcmp(tok, "exit"))
     {
         exit(0);
@@ -1288,6 +1313,8 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
             printf("Seems like you don't know how to use the break command :(\n");
             printf("Here's some information on how to use it :D\n\n");
 
+            printf("Note: One breakpoint is automatically placed by the emulator at 0x3000!\n\n");
+
             printf("add <address>: Adds a breakpoint for some address\n");
             printf("list: Lists all breakpoints\n");
             printf("remove <address>: Removes a breakpoint for some address\n");
@@ -1306,12 +1333,14 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
             printf("help: Prints this menu\n");
             printf("step: Steps forward one instruction\n");
             printf("continue: Continues execution until breakpoint\n");
+            printf("next: Continues until a the return of a subroutine/trap\n");
             printf("break ...: Family of breakpoint management commmands\n");
             printf("reg ...: Family of register management commands\n");
             printf("quit: Quits the emulator\n");
             printf("read <address>: Read a memory address (or range of addresses)\n");
             printf("write <address>: Write memory to an address\n");
             printf("decode <address>: Translate data at an address into an instruction\n");
+            printf("decode-i <instr>: Translate parameter into an instruction\n");
             printf("goto <address>: Set PC to some address\n \tNOTE: PSR and stack pointers will not be switched unless RTI is executed!\n");
         }
 
@@ -1351,7 +1380,7 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
 
         sscanf(tok, "%x", &addr);
 
-        *pc = memory + addr;
+        *pc = memory + addr - 1;
         memcpy(ctx->last, string, ARRAY_SIZE(string));
         return 1;
     }
@@ -1367,12 +1396,36 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
             return 0;
         }
 
-        sscanf(tok, "%x", &off);
+        if (!strcmp(tok, "PC"))
+        {
+            off = *pc - memory;
+        }
+        else
+            sscanf(tok, "%x", &off);
 
         off &= 0xffff;
         dump_instr(memory[off]);
 
         memcpy(ctx->last, string, ARRAY_SIZE(string));
+        return 0;
+    }
+
+    /* decode immediate */
+    if (!strcmp(tok, "decode-i"))
+    {
+        tok = strtok(NULL, " ");
+        unsigned instr;
+
+        if (!tok)
+        {
+            printf("Invalid parameter!\n");
+            return 0;
+        }
+
+        sscanf(tok, "%x", &instr);
+
+        instr &= 0xffff;
+        dump_instr(instr);
         return 0;
     }
 
@@ -1421,7 +1474,13 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
 
         if (!strcmp(tok, "list") || !strcmp(tok, "show"))
         {
-            dump_registers(registers, memory[OS_PSR], *pc - memory - 1, *(*pc-1));
+            dump_registers(registers, memory[OS_PSR], *pc - memory, **pc);
+            memcpy(ctx->last, string, ARRAY_SIZE(string));
+            return 0;
+        }
+        else if (!strcmp(tok, "clear"))
+        {
+            memset(registers, 0, 8 * sizeof(uint16_t));
             memcpy(ctx->last, string, ARRAY_SIZE(string));
             return 0;
         }
@@ -1629,19 +1688,28 @@ static void parse_extended(uint16_t instr1, uint16_t instr2, uint16_t *memory, u
 
 #endif
 
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+
 int main(int argc, char **argv)
 {
     uint16_t *pc;
     /* LC-3 can only address [0, 0xffff] but we have extra few values for ssp, usp, pc, registers */
     uint16_t *memory = calloc(0x10000 + 2, sizeof(uint16_t));
     uint16_t registers[8] = {0};
-    struct debugger_ctx ctx = {0};
+    struct debugger_ctx debug_ctx = {0};
     int ddrsize = 0x100;
     char *buffer = calloc(ddrsize, sizeof(char));
     int ddrct = 0;
     int debug = 0;
     uint16_t dump_addr[0x100] = {0};
+    uint16_t memory_set[2][0x100] = {0};
+    char input_buffer[0x100] = {0};
+    int input_size = 0;
+    int input_index = 0;
+    int memory_size = 0;
     int dump_size = 0;
+    int silent = 0;
+    int randomize = 0;
 
     memcpy(memory, OSProgram, sizeof(OSProgram));
 
@@ -1687,6 +1755,44 @@ int main(int argc, char **argv)
                 {
                     debug = 1;
                 }
+                else if (!strcmp(arg, "randomize"))
+                {
+                    randomize = 1;
+                }
+                else if (!strcmp(arg, "silent"))
+                {
+                    silent = 1;
+                }
+                else if (strstr(arg, "input=") == arg)
+                {
+                    arg += 6;
+                    int size = strlen(arg);
+                    input_size = MIN(size * sizeof(char), sizeof(input_buffer));
+                    memcpy(input_buffer, arg, input_size);
+                    input_size /= sizeof(char); /* convert to length in characters */
+                }
+                else if (strstr(arg, "memory=") == arg)
+                {
+                    char *tok;
+                    unsigned addr;
+                    unsigned i = 0;
+                    arg += 7;
+                    tok = strtok(arg, ",");
+
+                    do
+                    {
+                        sscanf(tok, "%x", &addr);
+
+                        memory_set[i][memory_size] = addr & 0xffff;
+                        if (i)
+                        {
+                            memory_size++;
+                            memory_size %= ARRAY_SIZE(memory_set[0]);
+                        }
+                        i = (i + 1) % 2;
+
+                    } while ((tok = strtok(NULL, ",")));
+                }
             }
             else if (!parse_program_from_bin(arg, memory) && i < argc-1)
             {
@@ -1703,6 +1809,14 @@ int main(int argc, char **argv)
         }
     }
 
+
+    if (randomize)
+    {
+        srand(time(NULL));
+        for (int i = 0; i < 8; i++)
+            registers[i] = rand();
+    }
+
     /* overwrite the OS memory to use the start address of the given program */
     /* FIXME: is this correct? */
     memory[USER_PC] = pc - memory;
@@ -1715,67 +1829,72 @@ int main(int argc, char **argv)
     /* reset ddr */
     memory[OS_DDR] = 0;
 
+    /* initialize specified memory locations */
+    for (int i = 0; i < memory_size; i++)
+    {
+        memory[memory_set[0][i]] = memory_set[1][i];
+    }
+
+    /* setup a breakpoint at USER_PC */
+    if (debug)
+    {
+        debug_ctx.cont = 1;
+        debug_ctx.breakpoint_size = 1;
+        debug_ctx.breakpoints[0] = memory[USER_PC];
+    }
+
     /* terminate the emulator if clock gets disabled */
     while (memory[OS_MCR] & (1u << 15))
     {
-        if (debug)
-        {
-            for (int i = 0; i < ctx.breakpoint_size; i++)
-            {
-                if (pc - memory == ctx.breakpoints[i])
-                    ctx.cont = 0;
-            }
-        }
+        uint16_t instr = *pc;
+        pc++;
 
-        if (debug && !ctx.cont)
-        {
-            dump_instr(*pc);
-            dump_registers(registers, memory[OS_PSR], pc - memory, *pc);
-        }
+        memory[OS_KBSR] = (input_index < input_size) << 15;
+        if (memory[OS_KBSR]) memory[OS_KBDR] = input_buffer[input_index];
 
-        switch ((*pc & 0xf000) >> 12)
+        switch ((instr & 0xf000) >> 12)
         {
             case 0b0001: /* ADD */
             {
                 uint16_t sr2;
-                if (*pc & (1 << 5))
+                if (instr & (1 << 5))
                 {
                     /* imm5 */
-                    sr2 = sext5(*pc & 0b11111);
+                    sr2 = sext5(instr & 0b11111);
                 } else {
                     /* SR2 */
-                    sr2 = registers[*pc & 0b111];
+                    sr2 = registers[instr & 0b111];
                 }
 
-                registers[(*pc & (0b111 << 9)) >> 9] = registers[(*pc & (0b111 << 6)) >> 6] + sr2;
+                registers[(instr & (0b111 << 9)) >> 9] = registers[(instr & (0b111 << 6)) >> 6] + sr2;
 
-                update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
 
                 break;
             }
             case 0b0101: /* AND */
             {
                 uint16_t sr2;
-                if (*pc & (1 << 5))
+                if (instr & (1 << 5))
                 {
                     /* imm5 */
-                    sr2 = sext5(*pc & 0b11111);
+                    sr2 = sext5(instr & 0b11111);
                 } else {
                     /* SR2 */
-                    sr2 = registers[*pc & 0b111];
+                    sr2 = registers[instr & 0b111];
                 }
 
-                registers[(*pc & (0b111 << 9)) >> 9] = registers[(*pc & (0b111 << 6)) >> 6] & sr2;
+                registers[(instr & (0b111 << 9)) >> 9] = registers[(instr & (0b111 << 6)) >> 6] & sr2;
 
-                update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
 
                 break;
             }
             case 0b1001: /* NOT */
             {
-                registers[(*pc & (0b111 << 9)) >> 9] = ~registers[(*pc & (0b111 << 6)) >> 6];
+                registers[(instr & (0b111 << 9)) >> 9] = ~registers[(instr & (0b111 << 6)) >> 6];
 
-                update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
 
                 break;
             }
@@ -1795,63 +1914,71 @@ int main(int argc, char **argv)
                 registers[6]--; /* push */
                 memory[registers[6]] = temp;
                 registers[6]--; /* push */
-                memory[registers[6]] = pc - memory + 1;
+                memory[registers[6]] = pc - memory;
 
-                pc = memory + memory[*pc & 0xff] - 1; /* pc will be incremented later */
+                pc = memory + memory[instr & 0xff];
+
+                if (debug_ctx.next) debug_ctx.next_ct++;
 
                 break;
             }
             case 0b1110: /* LEA */
             {
-                registers[(*pc & (0b111 << 9)) >> 9] = (pc - memory) + sext9(*pc & 0b111111111) + 1;
-                update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                registers[(instr & (0b111 << 9)) >> 9] = (pc - memory) + sext9(instr & 0b111111111);
+                update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
                 break;
             }
             case 0b1100: /* JMP */
             {
-                pc = memory + (int16_t)registers[(*pc & (0b111 << 6)) >> 6] - 1;
+                pc = memory + (int16_t)registers[(instr & (0b111 << 6)) >> 6];
                 break;
             }
             case 0b0000: /* BR */
             {
-                if (((*pc & (0b111 << 9)) >> 9) & (memory[OS_PSR] & 0b111))
-                    pc += sext9(*pc & 0b111111111);
+                if (((instr & (0b111 << 9)) >> 9) & (memory[OS_PSR] & 0b111))
+                    pc += sext9(instr & 0b111111111);
                 break;
             }
             case 0b0100: /* JSR(R) */
             {
-                registers[7] = pc - memory + 1;
-                if (*pc & (1 << 11))
+                registers[7] = pc - memory;
+                if (instr & (1 << 11))
                 {
                     /* imm11 */
-                    pc += sext11(*pc & 0b11111111111) - 1;
+                    pc += sext11(instr & 0b11111111111);
                 } else {
                     /* R */
-                    pc += (int16_t)registers[(*pc & (0b111 << 6)) >> 6] - 1;
+                    pc += (int16_t)registers[(instr & (0b111 << 6)) >> 6];
                 }
                 break;
             }
             case 0b0011: /* ST */
             {
-                pc[sext9(*pc & 0b111111111) + 1] = registers[(pc[1] & (0b111 << 9)) >> 9];
+                uint16_t *a = &pc[sext9(instr & 0b111111111)];
+                if (check_user_address(memory[OS_PSR], a - memory))
+                    interrupt(memory, registers, &pc, 0x2);
+                *a = registers[(instr & (0b111 << 9)) >> 9];
                 break;
             }
             case 0b1011: /* STI */
             {
-                /* TODO check pc + offset address */
-                uint16_t address = pc[sext9(*pc & 0b111111111) + 1];
+                uint16_t *a = &pc[sext9(instr & 0b111111111)];
+                uint16_t address = *a;
+                if (check_user_address(memory[OS_PSR], a - memory))
+                    interrupt(memory, registers, &pc, 0x2);
                 if (check_user_address(memory[OS_PSR], address))
                     interrupt(memory, registers, &pc, 0x2);
                 else
                 {
-                    memory[address] = registers[(*pc & (0b111 << 9)) >> 9];
+                    memory[address] = registers[(instr & (0b111 << 9)) >> 9];
                     if (address == OS_DDR && memory[OS_DDR])
                     {
                         buffer[ddrct++] = memory[OS_DDR];
-                        if (ddrct >= ddrsize)
+                        if (ddrct >= ddrsize-1)
                         {
                             ddrsize += 0x100;
                             buffer = realloc(buffer, ddrsize);
+                            buffer[ddrct] = 0;
                         }
                     }
                 }
@@ -1860,42 +1987,47 @@ int main(int argc, char **argv)
             }
             case 0b0111: /* STR */
             {
-                uint16_t address = registers[(*pc & (0b111 << 6)) >> 6] + sext6(*pc & 0b111111);
+                uint16_t address = registers[(instr & (0b111 << 6)) >> 6] + sext6(instr & 0b111111);
                 if (check_user_address(memory[OS_PSR], address))
                     interrupt(memory, registers, &pc, 0x2);
                 else
-                    memory[address] = registers[(*pc & (0b111 << 9)) >> 9];
+                    memory[address] = registers[(instr & (0b111 << 9)) >> 9];
                 break;
             }
             case 0b0010: /* LD */
             {
-                /* TODO check pc + offset address */
-                registers[(*pc & (0b111 << 9)) >> 9] = pc[sext9(*pc & 0b111111111) + 1];
-                update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                uint16_t *a = &pc[sext9(instr & 0b111111111)];
+                if (check_user_address(memory[OS_PSR], a - memory))
+                    interrupt(memory, registers, &pc, 0x2);
+                registers[(instr & (0b111 << 9)) >> 9] = *a;
+                update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
                 break;
             }
             case 0b1010: /* LDI */
             {
-                /* TODO check pc + offset address */
-                uint16_t address = pc[sext9(*pc & 0b111111111) + 1];
+                uint16_t *a = &pc[sext9(instr & 0b111111111)];
+                uint16_t address = *a;
+                if (check_user_address(memory[OS_PSR], a - memory))
+                    interrupt(memory, registers, &pc, 0x2);
                 if (check_user_address(memory[OS_PSR], address))
                     interrupt(memory, registers, &pc, 0x2);
                 else
                 {
-                    registers[(*pc & (0b111 << 9)) >> 9] = memory[address];
-                    update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                    registers[(instr & (0b111 << 9)) >> 9] = memory[address];
+                    if (address == OS_KBDR) input_index++;
+                    update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
                 }
                 break;
             }
             case 0b0110: /* LDR */
             {
-                uint16_t address = registers[(*pc & (0b111 << 6)) >> 6] + sext6(*pc & 0b111111);
+                uint16_t address = registers[(instr & (0b111 << 6)) >> 6] + sext6(instr & 0b111111);
                 if (check_user_address(memory[OS_PSR], address))
                     interrupt(memory, registers, &pc, 0x2);
                 else
                 {
-                    registers[(*pc & (0b111 << 9)) >> 9] = memory[address];
-                    update_cond_code(registers[(*pc & (0b111 << 9)) >> 9], memory);
+                    registers[(instr & (0b111 << 9)) >> 9] = memory[address];
+                    update_cond_code(registers[(instr & (0b111 << 9)) >> 9], memory);
                 }
                 break;
             }
@@ -1903,15 +2035,25 @@ int main(int argc, char **argv)
             {
                 if (~memory[OS_PSR] & (1 << 15))
                 {
-                    pc = memory + memory[registers[6]] - 1;
+                    pc = memory + memory[registers[6]];
                     registers[6]++; /* pop */
                     memory[OS_PSR] = memory[registers[6]];
                     registers[6]++; /* pop */
+
+                    if (debug_ctx.next && debug_ctx.next_ct) debug_ctx.next_ct--;
+
                     if (memory[OS_PSR] & (1 << 15))
                     {
                         /* setup user stack */
                         memory[OS_SSP] = registers[6];
                         registers[6] = memory[OS_USP];
+
+                        /* dump buffer on user return */
+                        if (!silent && debug)
+                        {
+                            printf("buffer:\n%s\n --- buffer end --- \n\n", buffer);
+                            printf("\n\n");
+                        }
                     }
                 } else {
                     /* throw exception */
@@ -1925,14 +2067,14 @@ int main(int argc, char **argv)
                 /* illegal instruction exception */
                 interrupt(memory, registers, &pc, 0x1);
 #else
-                parse_extended(*pc, *(pc+1), memory, registers);
+                parse_extended(instr, *pc, memory, registers);
                 pc++;
 #endif
                 break;
             }
             default:
             {
-                fprintf(stderr, "unimplemented instruction %x\n", *pc & 0xf000);
+                fprintf(stderr, "unimplemented instruction %x\n", instr & 0xf000 >> 12);
                 free(memory);
                 free(buffer);
                 return 1;
@@ -1942,16 +2084,33 @@ int main(int argc, char **argv)
         //printf("memory[0x4000]=%d\n", (int16_t)memory[0x4000]);
         //printf("memory[0x4001]=%d\n", (int16_t)memory[0x4001]);
 
-        pc++;
-        memory[OS_MCC]++;
+        if (debug)
+        {
+            for (int i = 0; i < debug_ctx.breakpoint_size; i++)
+            {
+                if (pc - memory == debug_ctx.breakpoints[i])
+                    debug_ctx.cont = 0;
+            }
+        }
 
-        if (debug && !ctx.cont)
-            while (!debug_cmd(&ctx, memory, &pc, registers));
+        if (!debug_ctx.next_ct) debug_ctx.next = 0;
+
+        if (debug && !debug_ctx.cont && !debug_ctx.next)
+        {
+            dump_instr(*pc);
+            dump_registers(registers, memory[OS_PSR], pc - memory, *pc);
+        }
+
+        if (debug && !debug_ctx.cont && !debug_ctx.next)
+            while (!debug_cmd(&debug_ctx, memory, &pc, registers));
     }
 
 
-    printf("buffer: %s \n\n --- buffer end --- \n\n", buffer);
-    printf("\n\n");
+    if (!silent)
+    {
+        printf("buffer:\n%s\n --- buffer end --- \n\n", buffer);
+        printf("\n\n");
+    }
 
     if (debug)
     {
@@ -1963,7 +2122,8 @@ int main(int argc, char **argv)
         printf("memory[%#x]=%#x\n", dump_addr[i], memory[dump_addr[i]]);
     }
 
-    printf("\n\nThe clock was disabled!\n\n");
+    if (!silent)
+        printf("\n\nThe clock was disabled!\n\n");
 
     free(buffer);
     free(memory);
