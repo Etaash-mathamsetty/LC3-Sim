@@ -1216,18 +1216,18 @@ static void update_cond_code(int16_t value, uint16_t *memory)
 
 struct debugger_ctx {
     int cont;
-    int next;
-    int next_ct;
+    int next_bp;
     char last[0x100];
     uint16_t breakpoints[67];
     int16_t breakpoint_size;
 };
 
-static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, uint16_t *registers)
+static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc,  uint16_t *registers)
 {
     char string[0x100] = {0};
     char *tok = NULL;
     char *end = string;
+    uint16_t opcode = (**pc & 0xf000) >> 12;
 
     printf(">>> ");
 
@@ -1272,8 +1272,9 @@ static int debug_cmd(struct debugger_ctx *ctx, uint16_t *memory, uint16_t **pc, 
     if (!strcmp(tok, "n") || !strcmp(tok, "next"))
     {
         memcpy(ctx->last, string, ARRAY_SIZE(string));
-        ctx->next = 1;
-        ctx->next_ct = 0;
+        /* only store next bp for JSR, TRAP */
+        if (opcode == 0b0100 || opcode == 0b1111)
+            ctx->next_bp = *pc - memory + 1;
         return 1;
     }
 
@@ -1838,6 +1839,7 @@ int main(int argc, char **argv)
     /* setup a breakpoint at USER_PC */
     if (debug)
     {
+        debug_ctx.next_bp = -1;
         debug_ctx.cont = 1;
         debug_ctx.breakpoint_size = 1;
         debug_ctx.breakpoints[0] = memory[USER_PC];
@@ -1917,8 +1919,6 @@ int main(int argc, char **argv)
                 memory[registers[6]] = pc - memory;
 
                 pc = memory + memory[instr & 0xff];
-
-                if (debug_ctx.next) debug_ctx.next_ct++;
 
                 break;
             }
@@ -2040,8 +2040,6 @@ int main(int argc, char **argv)
                     memory[OS_PSR] = memory[registers[6]];
                     registers[6]++; /* pop */
 
-                    if (debug_ctx.next && debug_ctx.next_ct) debug_ctx.next_ct--;
-
                     if (memory[OS_PSR] & (1 << 15))
                     {
                         /* setup user stack */
@@ -2051,7 +2049,7 @@ int main(int argc, char **argv)
                         /* dump buffer on user return */
                         if (!silent && debug)
                         {
-                            printf("buffer:\n%s\n --- buffer end --- \n\n", buffer);
+                            printf(" --- buffer begin ---\n%s\n --- buffer end --- \n\n", buffer);
                             printf("\n\n");
                         }
                     }
@@ -2086,6 +2084,9 @@ int main(int argc, char **argv)
 
         if (debug)
         {
+            if (pc - memory == debug_ctx.next_bp)
+                debug_ctx.next_bp = -1;
+
             for (int i = 0; i < debug_ctx.breakpoint_size; i++)
             {
                 if (pc - memory == debug_ctx.breakpoints[i])
@@ -2093,22 +2094,20 @@ int main(int argc, char **argv)
             }
         }
 
-        if (!debug_ctx.next_ct) debug_ctx.next = 0;
-
-        if (debug && !debug_ctx.cont && !debug_ctx.next)
+        if (debug && !debug_ctx.cont && debug_ctx.next_bp == -1)
         {
             dump_instr(*pc);
             dump_registers(registers, memory[OS_PSR], pc - memory, *pc);
         }
 
-        if (debug && !debug_ctx.cont && !debug_ctx.next)
+        if (debug && !debug_ctx.cont && debug_ctx.next_bp == -1)
             while (!debug_cmd(&debug_ctx, memory, &pc, registers));
     }
 
 
     if (!silent)
     {
-        printf("buffer:\n%s\n --- buffer end --- \n\n", buffer);
+        printf(" --- buffer begin ---\n%s\n --- buffer end --- \n\n", buffer);
         printf("\n\n");
     }
 
