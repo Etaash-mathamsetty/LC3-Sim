@@ -1144,39 +1144,38 @@ static void dump_instr(uint16_t instr)
     }
 }
 
+static uint16_t swap16(uint16_t x)
+{
+    return (x << 8) | (x >> 8);
+}
+
 static uint16_t *parse_program_from_bin(const char *path, uint16_t *memory)
 {
-    struct stat sb;
-    uint8_t *addr;
+    uint16_t origin;
+    uint16_t *addr;
     uint16_t *base;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    FILE *file = fopen(path, "rb");
 
-    if (fd == -1) return 0;
+    if (!file) return NULL;
 
-    if (fstat(fd, &sb) == -1)
-    {
-        close(fd);
-        return 0;
-    }
+    fread(&origin, sizeof(origin), 1, file);
+    origin = swap16(origin);
 
-    addr = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-
-    if (addr == MAP_FAILED)
-    {
-        close(fd);
-        return 0;
-    }
+    uint16_t max_read = 0x10000 - origin;
 
     /* FIXME: work around for endianness ? */
-    base = memory + (addr[1] | (uint16_t)(addr[0] << 8));
-    for (unsigned i = 0; i < sb.st_size - 3; i+=2)
+    base = memory + origin;
+    addr = base;
+
+    /* reuse origin for another purpose */
+    origin = fread(addr, sizeof(*addr), max_read, file);
+
+    while (origin--)
     {
-        base[i>>1] = (addr[i+3] | (uint16_t)(addr[i+2] << 8));
+        *addr = swap16(*addr), addr++;
     }
 
-
-    munmap(addr, sb.st_size);
-    close(fd);
+    fclose(file);
 
     return base;
 }
