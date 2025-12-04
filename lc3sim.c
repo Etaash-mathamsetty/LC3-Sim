@@ -25,12 +25,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 #include <ctype.h>
-#include <fcntl.h>
 #include <time.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 
 
 #ifndef ARRAY_SIZE
