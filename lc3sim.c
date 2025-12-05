@@ -1699,7 +1699,7 @@ int main(int argc, char **argv)
     int debug = 0;
     uint16_t dump_addr[0x100] = {0};
     uint16_t memory_set[2][0x100] = {0};
-    char input_buffer[0x100] = {0};
+    uint8_t input_buffer[0x100] = {0};
     int input_size = 0;
     int input_index = 0;
     int memory_size = 0;
@@ -1763,9 +1763,9 @@ int main(int argc, char **argv)
                 {
                     arg += 6;
                     int size = strlen(arg);
-                    input_size = MIN(size * sizeof(char), sizeof(input_buffer));
+                    input_size = MIN(size * sizeof(uint8_t), sizeof(input_buffer))+1;
                     memcpy(input_buffer, arg, input_size);
-                    input_size /= sizeof(char); /* convert to length in characters */
+                    input_size /= sizeof(uint8_t); /* convert to length in characters */
                 }
                 else if (strstr(arg, "memory=") == arg)
                 {
